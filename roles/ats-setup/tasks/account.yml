@@ -19,6 +19,15 @@
     --write-config >{{ inifile_admin | quote }}
   when: account_summary.rc != 0
 
+- name: obtain region name from euca2ools config
+  slurp:
+    path: "{{ inifile_admin }}"
+  register: admin_info
+
+- name: parse the endpoints and credentials for ATS installation
+  set_fact:
+    region_name: "{{ admin_info['content'] | b64decode | regex_findall('\\[region (.+)\\]') | first }}"
+
 - name: discover account number
   shell: >
     /usr/bin/euare-userlistbypath 
@@ -32,7 +41,7 @@
       regex_replace('arn:aws:iam::(\\d+):user/admin', '\\1') }}"
 
 - set_fact:
-    region_arg: "{{account_number}}:admin@eucalyptus" # switches profile to admin@poc account
+    region_arg: "{{account_number}}:admin@{{region_name}}" # switches profile to admin@poc account
 
 - name: check for SSH key for admin
   command: /usr/bin/euca-describe-keypairs

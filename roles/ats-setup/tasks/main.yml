@@ -16,7 +16,7 @@
 
 # TODO: install an EBS image
 
-- name: obtain account admin creds and endpoints
+- name: obtain account admin creds and endpoints from euca2ools config
   slurp:
     path: "{{ inifile_admin }}"
   register: admin_info
