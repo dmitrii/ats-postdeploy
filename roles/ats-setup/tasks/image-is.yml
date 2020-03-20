@@ -21,7 +21,7 @@
     raw_path: "{{ image_path | regex_replace('.tar.gz', '') }}"
     image_name: "CentOS-7-{{ ansible_date_time.iso8601_basic_short }}"
     bucket_name: "ats-images/{{ ansible_date_time.epoch }}"
-    image_desc: "generic cloud image"
+    image_desc: "generic CentOS 7 cloud image"
 
 - debug:
     msg:

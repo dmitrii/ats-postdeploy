@@ -1,0 +1,145 @@
+- name: discover the AZ name
+  command: /usr/bin/euca-describe-availability-zones
+  register: daz_output
+  failed_when: "'available' not in daz_output.stdout"   
+
+- set_fact:
+    current_az: "{{ daz_output.stdout | regex_replace('^AVAILABILITYZONE\\s+(\\S+)\\s+available.*$', '\\1') }}"
+  
+- name: download ATS images catalog
+  uri:
+    url: https://raw.githubusercontent.com/sjones4/eucalyptus-extras/master/images/image-catalog.json
+    return_content: true
+  register: curl
+  failed_when: "'Ubuntu 18.04' not in curl.content"
+  when: image_url is not defined
+
+- set_fact:
+    image_url: "{{ curl.content | from_json | json_query('images[?description == `Ubuntu 18.04/Bionic`] | [0].url') }}"
+  when: curl is defined
+
+- set_fact:
+    image_file: "{{ image_url | urlsplit('path') | basename }}"
+
+- set_fact:
+    image_path: "{{ work_dir }}/{{ image_file }}"
+
+- set_fact:
+    raw_path: "{{ image_path | regex_replace('\\.img', '.raw') }}"
+    image_name: "Ubuntu-Bionic-{{ ansible_date_time.iso8601_basic_short }}"
+    bucket_name: "ats-images"
+    prefix: "{{ ansible_date_time.epoch }}"
+    image_desc: "generic Ubuntu Bionic cloud image"
+
+- debug:
+    msg:
+    - "will download image from {{ image_url }}"
+    - "into {{ image_path }}"
+
+- name: download a sample image
+  get_url:
+    url: "{{ image_url }}"
+    dest: "{{ image_path }}"
+    mode: '0440'
+
+- name: convert the sample image
+  command: 
+    cmd: /usr/bin/qemu-img
+        convert -O raw -f qcow2
+        "{{ image_path }}"
+        "{{ raw_path }}"
+    creates: "{{ raw_path }}"
+  register: convert_output
+
+- name: upload image into a volume
+  command: /usr/bin/euca-import-volume {{ raw_path }}
+    --format raw
+    --availability-zone {{ current_az | quote }}
+    --bucket {{ bucket_name | quote }}
+    --prefix {{ prefix | quote }}
+    --description {{ image_desc | quote }}
+  changed_when: true
+  register: import_output
+
+- debug:
+    msg: "{{ import_output }}"
+
+- set_fact:
+    import_task: "{{ import_output.stdout | regex_search('TaskId\\s+(import-vol-[\\d\\w]+)', '\\1') | first }}"
+
+- debug:
+    msg: 
+      - "waiting for import task {{ import_task }} to complete"
+
+- name: check that the import task is pending
+  shell: >
+    /usr/bin/euca-describe-conversion-tasks {{ import_task | quote }}
+    | egrep 'Status\s(active|completed)'
+  changed_when: false
+
+- name: wait for import task to complete
+  shell: >
+    /usr/bin/euca-describe-conversion-tasks {{ import_task | quote }}
+    | egrep 'Status\scompleted'
+  register: dct_result
+  retries: 100
+  delay: 6
+  until: dct_result.rc == 0
+  changed_when: false
+
+- name: get the volume ID
+  shell: /usr/bin/euca-describe-conversion-tasks {{ import_task | quote }}
+  register: dct_result
+
+- set_fact:
+    volume_id: "{{ dct_result.stdout | regex_search('VolumeId\\s+(vol-[\\d\\w]+)', '\\1') | first }}"
+
+- debug:
+    msg:
+      - "will snapshot volume {{ volume_id }} containing the EBS image"
+
+- name: taking volume snapshot
+  command: /usr/bin/euca-create-snapshot {{ volume_id | quote }}
+  register: snap_result
+
+- set_fact:
+    snapshot_id: "{{ snap_result.stdout | regex_search('snap-[\\d\\w]+') }}"
+
+- debug:
+    msg:
+      - "{{ snapshot_id }}"
+      - "{{ snap_result.stdout }}"
+
+- name: check that the snapshot is active
+  shell: >
+    /usr/bin/euca-describe-snapshots {{ snapshot_id | quote }}
+    | egrep '(completed|pending)'
+  changed_when: false
+
+- name: wait for snapshot to complete
+  shell: >
+    /usr/bin/euca-describe-snapshots {{ snapshot_id | quote }}
+    | grep completed
+  register: dsn_result
+  retries: 50
+  delay: 6
+  until: dsn_result.rc == 0
+  changed_when: false
+
+- name: registering snapshot
+  command: /usr/bin/euca-register
+    -n {{ image_name | quote }}
+    --root-device-name /dev/vda
+    -b /dev/vda={{ snapshot_id | quote }}
+  register: register_result
+
+- set_fact:
+    image_emi: "{{ register_result.stdout | regex_search('emi-[\\d\\w]+') }}"
+
+- name: enable image for everyone
+  command: /usr/bin/euca-modify-image-attribute -l -a all {{ image_emi | quote }}
+  
+- name: tag the image
+  command: /usr/bin/euca-create-tags --tag type=ats-sample-image {{ image_emi | quote }}
+
+
