@@ -10,7 +10,14 @@
   ignore_errors: true
   changed_when: false
 
-- name: ensure account admin has a profile in .aws/config and .aws/credentials
+- name: add empty account admin profile entry to .aws/config
+  lineinfile:
+    path: ~/.aws/config
+    insertafter: EOF
+    line: "[profile {{ profile_admin }}]"
+  when: config_access_key_id.stdout != ats_key_id
+
+- name: add credentials and parameters for admin profile in .aws/config and .aws/credentials
   shell: |
     aws --profile {{ profile_admin }} configure set aws_access_key_id {{ ats_key_id }}
     aws --profile {{ profile_admin }} configure set aws_secret_access_key {{ ats_secret_key }}
